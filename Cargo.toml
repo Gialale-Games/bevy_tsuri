@@ -1,0 +1,28 @@
+[package]
+name = "bevy_tsuri"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = {version = "0.17", default-features = false, features = ["bevy_log"]}
+dyn-clone = "1.0.18"
+ego-tree = "0.11.0"
+
+[dev-dependencies]
+bevy = {version = "0.17", default-features = true}
+
+[lints.clippy]
+type_complexity = "allow"
+
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.ci]
+inherits = "dev"
+opt-level = 0
+debug = "line-tables-only"
+codegen-units = 4
