@@ -2,6 +2,13 @@
 name = "bevy_tsuri"
 version = "0.1.0"
 edition = "2024"
+description = "A Bevy plugin for creating a npc ai."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/Gialale-Games/bevy_tsuri"
+categories = ["game-development", "games"]
+keywords = ["bevy", "gamedev"]
+exclude = ["assets/*"]
 
 [dependencies]
 bevy = {version = "0.17", default-features = false, features = ["bevy_log"]}
