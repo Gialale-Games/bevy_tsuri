@@ -59,6 +59,14 @@ impl Plugin for BehavePlugin {
         app.register_type::<BehaveTimeout>();
         app.init_resource::<InterruptState>();
 
+        #[cfg(feature = "egui_logging")]
+        {
+            if !app.is_plugin_added::<bevy_egui::EguiPlugin>() {
+                app.add_plugins(bevy_egui::EguiPlugin::default());
+            }
+            app.add_systems(bevy_egui::EguiPrimaryContextPass, draw_egui_logging);
+        }
+
         app.add_systems(
             self.schedule,
             (tick_timeout_components, tick_interrupt_components).in_set(BehaveSet),
@@ -255,6 +263,8 @@ fn tick_trees_sync(
 pub struct BehaveTree {
     tree: Tree<BehaveNode>,
     logging: bool,
+    egui_logging: bool,
+    last_status: Option<BehaveNodeStatus>,
 }
 impl std::fmt::Display for BehaveTree {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -360,6 +370,8 @@ impl BehaveTree {
         Self {
             tree,
             logging: false,
+            egui_logging: false,
+            last_status: None,
         }
     }
 
@@ -375,9 +387,18 @@ impl BehaveTree {
         self
     }
 
+    /// Display this tree's state in the shared egui debug window.
+    /// Requires the `egui_logging` feature to actually render anything.
+    pub fn with_egui_logging(mut self, enabled: bool) -> Self {
+        self.egui_logging = enabled;
+        self
+    }
+
     fn tick(&mut self, commands: &mut Commands, tick_ctx: &TickCtx) -> BehaveNodeStatus {
         let mut node = self.tree.root_mut();
-        tick_node(&mut node, commands, tick_ctx)
+        let result = tick_node(&mut node, commands, tick_ctx);
+        self.last_status = Some(result);
+        result
     }
 
     /// Returns Option<Entity> being an entity that was spawned to run this task node.
@@ -629,4 +650,60 @@ fn handle_interrupt_responses(
             commands.trigger(original_ctx.success());
         }
     }
+}
+
+#[cfg(feature = "egui_logging")]
+fn draw_egui_logging(
+    mut contexts: bevy_egui::EguiContexts,
+    q: Query<(Entity, Option<&Name>, &BehaveTree)>,
+) {
+    use bevy_egui::egui;
+
+    let trees: Vec<(Entity, Option<&Name>, &BehaveTree)> =
+        q.iter().filter(|(_, _, bt)| bt.egui_logging).collect();
+    if trees.is_empty() {
+        return;
+    }
+
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    egui::Window::new("BehaveTree Debug")
+        .resizable(true)
+        .default_size([480.0, 320.0])
+        .show(ctx, |ui| {
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                let columns = (trees.len() as f32).sqrt().ceil().max(1.0) as usize;
+                egui::Grid::new("behave_tree_grid")
+                    .striped(true)
+                    .spacing([16.0, 16.0])
+                    .min_col_width(280.0)
+                    .min_row_height(120.0)
+                    .show(ui, |ui| {
+                        for (i, (entity, name, bt)) in trees.iter().enumerate() {
+                            let label = match name {
+                                Some(n) => format!("{} ({entity})", n.as_str()),
+                                None => format!("{entity}"),
+                            };
+                            let state = match bt.last_status {
+                                Some(s) => format!("{:?}", s),
+                                None => "Idle".to_string(),
+                            };
+                            ui.group(|ui| {
+                                ui.set_min_size(egui::vec2(280.0, 120.0));
+                                ui.vertical(|ui| {
+                                    ui.strong(label);
+                                    ui.label(format!("state: {state}"));
+                                    ui.separator();
+                                    ui.monospace(format!("{}", bt.tree));
+                                });
+                            });
+                            if (i + 1) % columns == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            });
+        });
 }

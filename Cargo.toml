@@ -12,11 +12,22 @@ exclude = ["assets/*"]
 
 [dependencies]
 bevy = {version = "0.17", default-features = false, features = ["bevy_log"]}
+bevy_egui = {version = "0.38", optional = true, default-features = false, features = ["default_fonts", "render"]}
 dyn-clone = "1.0.18"
 ego-tree = "0.11.0"
 
+[features]
+default = []
+egui_logging = ["dep:bevy_egui"]
+
 [dev-dependencies]
 bevy = {version = "0.17", default-features = true}
+bevy_pancam = "0.19.0"
+rand = "0.10.1"
+
+[[example]]
+name = "test"
+required-features = ["egui_logging"]
 
 [lints.clippy]
 type_complexity = "allow"
