@@ -23,6 +23,8 @@ pub struct BehavePlugin {
     schedule: Interned<dyn ScheduleLabel>,
     /// if true, use an exclusive mut World system to tick trees, to avoid next-frame delays on triggers
     synchronous: bool,
+    /// Default tick rate applied to every `BehaveTree` that doesn't provide its own `BehaveTickRate`.
+    default_tick_rate: BehaveTickRate,
 }
 
 impl BehavePlugin {
@@ -31,6 +33,7 @@ impl BehavePlugin {
         Self {
             schedule: schedule.intern(),
             synchronous: false,
+            default_tick_rate: BehaveTickRate::default(),
         }
     }
     /// Return the schedule this plugin will run in.
@@ -42,6 +45,12 @@ impl BehavePlugin {
     /// (to avoid next-frame delays on triggers)
     pub fn with_synchronous(mut self) -> Self {
         self.synchronous = true;
+        self
+    }
+
+    /// Set the default tick rate for all `BehaveTree` entities that don't specify their own.
+    pub fn with_tick_rate(mut self, rate: BehaveTickRate) -> Self {
+        self.default_tick_rate = rate;
         self
     }
 }
@@ -58,6 +67,9 @@ impl Plugin for BehavePlugin {
         app.configure_sets(self.schedule, BehaveSet);
         app.register_type::<BehaveTimeout>();
         app.init_resource::<InterruptState>();
+        app.insert_resource(GlobalTickRate(self.default_tick_rate.clone()));
+
+        app.add_observer(on_behave_tree_added);
 
         app.add_systems(
             self.schedule,
@@ -86,6 +98,25 @@ impl Plugin for BehavePlugin {
     }
 }
 
+/// Resource holding the plugin-level default tick rate for new `BehaveTree` entities.
+#[derive(Resource)]
+struct GlobalTickRate(BehaveTickRate);
+
+/// When a `BehaveTree` is spawned, auto-insert the plugin's default `BehaveTickRate`
+/// unless the spawn already provided one.
+fn on_behave_tree_added(
+    trigger: On<Add, BehaveTree>,
+    mut commands: Commands,
+    global_rate: Res<GlobalTickRate>,
+    q_rate: Query<&BehaveTickRate>,
+) {
+    if q_rate.get(trigger.event().entity).is_err() {
+        commands
+            .entity(trigger.event().entity)
+            .insert(global_rate.0.clone());
+    }
+}
+
 /// The entity of the character that the behaviour is controlling.
 /// This is required to be on the entity holding the BehaviourTree component.
 /// The actual entity (either specified here or the parent) is provided by calling
@@ -111,6 +142,51 @@ pub struct BehaveSupervisorEntity(pub Entity);
 #[derive(Component)]
 pub(crate) struct BehaveAwaitingTrigger;
 
+/// Throttles how often a `BehaveTree` entity is ticked.
+///
+/// Auto-inserted on every `BehaveTree` by the plugin, defaulting to the rate set on
+/// `BehavePlugin` (64 Hz by default). Provide your own `BehaveTickRate` component at
+/// spawn time — or use `BehaveTree::with_tick_rate()` — to pick a different rate per tree.
+/// AI rarely needs to react quickly, and timer/timeout node semantics stay correct: the tree
+/// keys off `Time::elapsed_secs()`, not tick counts, so a slower tick only adds reaction
+/// latency, it doesn't distort durations.
+///
+/// Use `BehaveTickRate::unthrottled()` to tick every time the `BehaveSet` runs.
+#[derive(Component, Debug, Clone)]
+pub struct BehaveTickRate {
+    interval_secs: f32,
+    last_tick: f32,
+}
+
+impl Default for BehaveTickRate {
+    /// 64 Hz, matching Bevy's default `FixedUpdate` timestep (every fixed step ticks).
+    fn default() -> Self {
+        Self::from_hz(64.0)
+    }
+}
+
+impl BehaveTickRate {
+    /// Tick this tree at most once per `interval_secs`.
+    pub fn from_secs(interval_secs: f32) -> Self {
+        Self {
+            interval_secs,
+            last_tick: f32::NEG_INFINITY,
+        }
+    }
+    /// Tick this tree at most `hz` times per second.
+    pub fn from_hz(hz: f32) -> Self {
+        Self::from_secs(1.0 / hz)
+    }
+    /// Tick this tree every time the `BehaveSet` runs (no throttling).
+    pub fn unthrottled() -> Self {
+        Self::from_secs(0.0)
+    }
+    /// Is the tree due for a tick at the given elapsed time?
+    fn due(&self, now: f32) -> bool {
+        now - self.last_tick >= self.interval_secs
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn tick_trees(
     mut query: Query<
@@ -120,6 +196,7 @@ fn tick_trees(
             Option<&ChildOf>,
             &BehaveTargetEntity,
             Option<&BehaveSupervisorEntity>,
+            &mut BehaveTickRate,
         ),
         (Without<BehaveAwaitingTrigger>, Without<BehaveFinished>),
     >,
@@ -127,7 +204,15 @@ fn tick_trees(
     mut commands: Commands,
     time: Res<Time>,
 ) {
-    for (bt_entity, mut bt, opt_parent, target_entity, opt_sup_entity) in query.iter_mut() {
+    let now = time.elapsed_secs();
+    for (bt_entity, mut bt, opt_parent, target_entity, opt_sup_entity, mut rate) in
+        query.iter_mut()
+    {
+        // throttle: skip trees that aren't due yet, otherwise stamp this tick
+        if !rate.due(now) {
+            continue;
+        }
+        rate.last_tick = now;
         let target_entity = match target_entity {
             BehaveTargetEntity::Parent => opt_parent
                 .map(|p| p.parent())
@@ -135,7 +220,7 @@ fn tick_trees(
             BehaveTargetEntity::Entity(e) => *e,
             BehaveTargetEntity::RootAncestor => q_parents.root_ancestor(bt_entity),
         };
-        let tick_ctx = TickCtx::new(bt_entity, target_entity, time.elapsed_secs())
+        let tick_ctx = TickCtx::new(bt_entity, target_entity, now)
             .with_optional_sup_entity(opt_sup_entity.map(|c| c.0));
         let tick_result = bt.tick(&mut commands, &tick_ctx);
         match tick_result {
@@ -179,6 +264,7 @@ fn tick_trees_sync(
                 Option<&ChildOf>,
                 &BehaveTargetEntity,
                 Option<&BehaveSupervisorEntity>,
+                &mut BehaveTickRate,
             ),
             (Without<BehaveAwaitingTrigger>, Without<BehaveFinished>),
         >,
@@ -201,8 +287,16 @@ fn tick_trees_sync(
         }
         // info!("Ticking {} trees (sync)", query.iter().count());
 
+        let now = time.elapsed_secs();
         let mut trees_processed = 0;
-        for (bt_entity, mut bt, opt_parent, target_entity, opt_sup_entity) in query.iter_mut() {
+        for (bt_entity, mut bt, opt_parent, target_entity, opt_sup_entity, mut rate) in
+            query.iter_mut()
+        {
+            // throttle: a not-due tree is treated like a RunningTimer below (skipped, and not
+            // counted toward trees_processed) so the sync loop still terminates this frame.
+            if !rate.due(now) {
+                continue;
+            }
             let target_entity = match target_entity {
                 BehaveTargetEntity::Parent => opt_parent
                     .map(|p| p.parent())
@@ -210,7 +304,7 @@ fn tick_trees_sync(
                 BehaveTargetEntity::Entity(e) => *e,
                 BehaveTargetEntity::RootAncestor => q_parents.root_ancestor(bt_entity),
             };
-            let tick_ctx = TickCtx::new(bt_entity, target_entity, time.elapsed_secs())
+            let tick_ctx = TickCtx::new(bt_entity, target_entity, now)
                 .with_optional_sup_entity(opt_sup_entity.map(|c| c.0));
             let tick_result = bt.tick(&mut commands, &tick_ctx);
             match tick_result {
@@ -223,7 +317,9 @@ fn tick_trees_sync(
                 BehaveNodeStatus::Failure => {
                     commands.entity(bt_entity).insert(BehaveFinished(false));
                 }
-                BehaveNodeStatus::RunningTimer => {}
+                BehaveNodeStatus::RunningTimer => {
+                    rate.last_tick = now;
+                }
                 BehaveNodeStatus::Running => {}
                 BehaveNodeStatus::PendingReset => {}
             }
@@ -373,6 +469,13 @@ impl BehaveTree {
     pub fn with_logging(mut self, enabled: bool) -> Self {
         self.logging = enabled;
         self
+    }
+
+    /// Override the default tick rate for this tree.
+    /// Returns `(BehaveTree, BehaveTickRate)` so the explicit component overrides
+    /// the plugin-global default when spawned.
+    pub fn with_tick_rate(self, rate: BehaveTickRate) -> (Self, BehaveTickRate) {
+        (self, rate)
     }
 
     fn tick(&mut self, commands: &mut Commands, tick_ctx: &TickCtx) -> BehaveNodeStatus {

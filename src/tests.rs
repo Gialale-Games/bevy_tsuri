@@ -398,6 +398,170 @@ fn test_behave_interrupt_inverted() {
     app.run();
 }
 
+/// Global tick rate of 1 Hz makes a simple trigger tree take many frames.
+#[test]
+fn test_global_tick_rate_slows_tree() {
+    use crate::prelude::*;
+    use bevy::prelude::*;
+
+    #[derive(Resource, Default)]
+    struct Frame(u32);
+
+    fn tick_frame(mut frame: ResMut<Frame>) {
+        frame.0 += 1;
+    }
+
+    #[derive(Clone)]
+    struct SlowCheck;
+
+    fn on_slow_check(
+        t: On<BehaveTrigger<SlowCheck>>,
+        mut commands: Commands,
+    ) {
+        commands.trigger(t.ctx().success());
+    }
+
+    fn on_finished(
+        _t: On<Add, BehaveFinished>,
+        frame: Res<Frame>,
+        mut exit: MessageWriter<AppExit>,
+    ) {
+        info!("Global-slow finished @ {}", frame.0);
+        assert!(
+            frame.0 >= 50,
+            "Expected >=50 frames with 1 Hz tick rate, got {}",
+            frame.0
+        );
+        exit.write(AppExit::Success);
+    }
+
+    let mut app = App::new();
+    app.init_resource::<Frame>();
+    app.add_plugins(MinimalPlugins);
+    app.add_plugins(BehavePlugin::default().with_tick_rate(BehaveTickRate::from_hz(1.0)));
+    app.add_plugins(bevy::log::LogPlugin::default());
+    app.add_observer(on_slow_check);
+    app.add_observer(on_finished);
+    app.add_systems(FixedPreUpdate, tick_frame.before(BehaveSet));
+    app.add_systems(Startup, |mut commands: Commands| {
+        let tree = behave! { Behave::trigger(SlowCheck) };
+        commands.spawn(BehaveTree::new(tree).with_logging(true));
+    });
+    app.run();
+}
+
+/// Per-tree unthrottled rate overrides a slow global default, so the tree finishes fast.
+#[test]
+fn test_per_tree_rate_overrides_global() {
+    use crate::prelude::*;
+    use bevy::prelude::*;
+
+    #[derive(Resource, Default)]
+    struct Frame(u32);
+
+    fn tick_frame(mut frame: ResMut<Frame>) {
+        frame.0 += 1;
+    }
+
+    #[derive(Clone)]
+    struct FastCheck;
+
+    fn on_fast_check(
+        t: On<BehaveTrigger<FastCheck>>,
+        mut commands: Commands,
+    ) {
+        commands.trigger(t.ctx().success());
+    }
+
+    fn on_finished(
+        _t: On<Add, BehaveFinished>,
+        frame: Res<Frame>,
+        mut exit: MessageWriter<AppExit>,
+    ) {
+        info!("Per-tree-override finished @ {}", frame.0);
+        assert!(
+            frame.0 <= 10,
+            "Expected <=10 frames with unthrottled rate override, got {}",
+            frame.0
+        );
+        exit.write(AppExit::Success);
+    }
+
+    let mut app = App::new();
+    app.init_resource::<Frame>();
+    app.add_plugins(MinimalPlugins);
+    app.add_plugins(BehavePlugin::default().with_tick_rate(BehaveTickRate::from_hz(1.0)));
+    app.add_plugins(bevy::log::LogPlugin::default());
+    app.add_observer(on_fast_check);
+    app.add_observer(on_finished);
+    app.add_systems(FixedPreUpdate, tick_frame.before(BehaveSet));
+    app.add_systems(Startup, |mut commands: Commands| {
+        let tree = behave! { Behave::trigger(FastCheck) };
+        commands.spawn(
+            BehaveTree::new(tree)
+                .with_logging(true)
+                .with_tick_rate(BehaveTickRate::unthrottled()),
+        );
+    });
+    app.run();
+}
+
+/// Per-tree slow rate overrides the default 64 Hz global, so the tree takes many frames.
+#[test]
+fn test_per_tree_rate_slower_than_global() {
+    use crate::prelude::*;
+    use bevy::prelude::*;
+
+    #[derive(Resource, Default)]
+    struct Frame(u32);
+
+    fn tick_frame(mut frame: ResMut<Frame>) {
+        frame.0 += 1;
+    }
+
+    #[derive(Clone)]
+    struct SlowCheck;
+
+    fn on_slow_check(
+        t: On<BehaveTrigger<SlowCheck>>,
+        mut commands: Commands,
+    ) {
+        commands.trigger(t.ctx().success());
+    }
+
+    fn on_finished(
+        _t: On<Add, BehaveFinished>,
+        frame: Res<Frame>,
+        mut exit: MessageWriter<AppExit>,
+    ) {
+        info!("Per-tree-slower finished @ {}", frame.0);
+        assert!(
+            frame.0 >= 50,
+            "Expected >=50 frames with 1 Hz per-tree rate, got {}",
+            frame.0
+        );
+        exit.write(AppExit::Success);
+    }
+
+    let mut app = App::new();
+    app.init_resource::<Frame>();
+    app.add_plugins(MinimalPlugins);
+    app.add_plugins(BehavePlugin::default());
+    app.add_plugins(bevy::log::LogPlugin::default());
+    app.add_observer(on_slow_check);
+    app.add_observer(on_finished);
+    app.add_systems(FixedPreUpdate, tick_frame.before(BehaveSet));
+    app.add_systems(Startup, |mut commands: Commands| {
+        let tree = behave! { Behave::trigger(SlowCheck) };
+        commands.spawn(
+            BehaveTree::new(tree)
+                .with_logging(true)
+                .with_tick_rate(BehaveTickRate::from_hz(1.0)),
+        );
+    });
+    app.run();
+}
+
 /// asserts the tree.to_string matches the expected string, accounting for whitespace/indentation
 fn assert_tree(s: &str, tree: Tree<Behave>) {
     // strip and tidy any indent spaces in the expected output so we can easily compare
