@@ -186,12 +186,12 @@ fn tick_trees_sync(
         Commands,
         Res<Time>,
     )>,
-) {
+) -> Result {
     let mut sanity_counter = 0;
     loop {
-        let (mut query, q_parents, mut commands, time) = params.get_mut(world);
+        let (mut query, q_parents, mut commands, time) = params.get_mut(world)?;
         if query.is_empty() {
-            return;
+            return Ok(());
         }
         sanity_counter += 1;
         // avoid infinite loops in case of logic errors:
@@ -244,6 +244,7 @@ fn tick_trees_sync(
             break;
         }
     }
+    Ok(())
 }
 
 /// The main behaviour tree component.
@@ -448,7 +449,7 @@ impl BehaveTimeout {
 }
 
 fn on_tick_timeout_added(
-    t: On<Add, BehaveTimeout>,
+    t: On<Add<BehaveTimeout>>,
     mut q: Query<&mut BehaveTimeout>,
     time: Res<Time>,
 ) {
