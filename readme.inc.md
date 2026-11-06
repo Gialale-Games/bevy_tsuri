@@ -564,6 +564,14 @@ https://github.com/user-attachments/assets/ef4f0539-0b4d-4d57-9516-a39783de140f
 
 ## Bevy Version Compatibility
 
+| bevy_tsuri | bevy |
+| ---------- | ---- |
+| 0.3        | 0.20 |
+| 0.2        | 0.18 |
+| 0.1        | 0.17 |
+
+Upstream bevy_behave:
+
 | bevy_behave | bevy |
 | ----------- | ---- |
 | 0.4         | 0.17 |
